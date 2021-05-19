@@ -222,10 +222,13 @@ class app(ShowBase):
         
         # make_collision_from_model(hangar_1, 0, 0, self.world, (hangar_1.get_pos()))
 
-        # prototype hardware shader for Actor nodes
-        actor_shader = Shader.load(Shader.SL_GLSL, "shaders/simplepbr_vert_mod_1.vert", "shaders/simplepbr_frag_mod_1.frag")
-        actor_shader = ShaderAttrib.make(actor_shader)
-        actor_shader = actor_shader.setFlag(ShaderAttrib.F_hardware_skinning, True)
+        # load the scene shader
+        scene_shader = Shader.load(Shader.SL_GLSL, "shaders/simplepbr_vert_mod_1.vert", "shaders/simplepbr_frag_mod_1.frag")
+        self.render.set_shader(scene_shader)
+        self.render.set_antialias(AntialiasAttrib.MMultisample)
+        scene_shader = ShaderAttrib.make(scene_shader)
+        scene_shader = scene_shader.setFlag(ShaderAttrib.F_hardware_skinning, True)
+        
         '''
         # initialize player character physics the Bullet way
         shape_1 = BulletCapsuleShape(0.75, 0.5, ZUp)
