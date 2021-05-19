@@ -220,7 +220,7 @@ class app(ShowBase):
             np.set_collide_mask(BitMask32.allOn())
             world.attach_rigid_body(np.node())
         
-        make_collision_from_model(hangar_1, 0, 0, self.world, (hangar_1.get_pos()))
+        # make_collision_from_model(hangar_1, 0, 0, self.world, (hangar_1.get_pos()))
 
         # prototype hardware shader for Actor nodes
         actor_shader = Shader.load(Shader.SL_GLSL, "shaders/simplepbr_vert_mod_1.vert", "shaders/simplepbr_frag_mod_1.frag")
