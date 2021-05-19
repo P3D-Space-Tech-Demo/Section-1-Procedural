@@ -1,4 +1,4 @@
-// Copyright (c) 2021 Logan Bier. All rights reserved.
+// Author: Simulan
 // Based on panda3d-simplepbr (see license files for information)
 // Based on code from https://github.com/KhronosGroup/glTF-Sample-Viewer
 
