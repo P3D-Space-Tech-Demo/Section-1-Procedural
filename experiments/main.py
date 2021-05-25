@@ -2,6 +2,7 @@ from direct.showbase.ShowBase import ShowBase
 from panda3d.core import *
 from random import random
 import array
+import gltf
 
 
 base = ShowBase()
@@ -107,9 +108,10 @@ class WorkerBot(Worker):
         self.type = "bot"
         self.model = model
         self.beam = beam.copy_to(self.model)
-        self.beam.set_pos(0., 0., 2.3)
+        self.beam.set_pos(0., 1.325, 1.92)
         self.beam.set_sy(.1)
         self.radius = 3.
+        self.turn_speed = 500.
         self.accel = 15.
         self.speed = 5.
         self.speed_min = 5.
@@ -197,10 +199,17 @@ class WorkerBot(Worker):
         pos += self.speed_vec * self.speed * dt
         pos.z = 0.
         self.model.set_pos(pos)
+        old_h = self.model.get_h()
         quat = Quat()
         look_at(quat, self.speed_vec, Vec3.up())
         h, p, r = quat.get_hpr()
-        self.model.set_h(h + 180.)
+        d_h = h - old_h
+
+        if abs(d_h) > self.turn_speed * dt:
+            turn_speed = self.turn_speed * (-1. if d_h < 0. else 1.)
+            self.model.set_h(old_h + turn_speed * dt)
+        else:
+            self.model.set_h(h)
 
         pushed = False
         push_vec = Vec3()
@@ -376,7 +385,7 @@ class Demo:
         offset = (p_max - p_min).y / 10.
 
         for i in range(6):
-            model = base.loader.load_model("models/builder_bot.fbx")
+            model = base.loader.load_model("models/builder_bot.gltf")
             model.reparent_to(base.render)
             model.set_pos(0., p_max.y - offset * i, 0.)
             bot = WorkerBot(model, beam)
@@ -629,3 +638,4 @@ class Demo:
 
 Demo()
 base.run()
+
