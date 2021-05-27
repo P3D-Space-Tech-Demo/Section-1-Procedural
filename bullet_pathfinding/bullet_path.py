@@ -454,13 +454,13 @@ class main(ShowBase):
              v_dist_1 = (vehicle_1.get_pos() - vehicle_2.get_pos(base.render)).length()
              print(v_dist_1)
 
-             if v_dist_1 < 10:
+             if v_dist_1 < 11:
                  print('Future collision detected between vehicle_1 and vehicle_2! Correcting course...')
                  self.vehicle_1_steer_inc = -5
                  self.vehicle_1_engine_force = 0
                  self.vehicle_1_brake_force = 200
                  
-             if v_dist_1 > 11:
+             if v_dist_1 > 12:
                  print('Course clear, driving...')
                  self.vehicle_1_steer_inc = 5
                  self.vehicle_1_engine_force = 100
@@ -469,13 +469,13 @@ class main(ShowBase):
              v_dist_2 = (vehicle_2.get_pos() - vehicle_3.get_pos(base.render)).length()
              print(v_dist_2)
 
-             if v_dist_2 < 10:
+             if v_dist_2 < 11:
                  print('Future collision detected between vehicle_2 and vehicle_3! Correcting course...')
                  self.vehicle_2_steer_inc = -3
                  self.vehicle_2_engine_force = 0
                  self.vehicle_2_brake_force = 200
                  
-             if v_dist_2 > 11:
+             if v_dist_2 > 12:
                  print('Course clear, driving...')
                  self.vehicle_2_steer_inc = 3
                  self.vehicle_2_engine_force = 100
@@ -484,7 +484,7 @@ class main(ShowBase):
              v_dist_3 = (vehicle_3.get_pos() - vehicle_1.get_pos(base.render)).length()
              print(v_dist_3)
 
-             if v_dist_3 < 10:
+             if v_dist_3 < 11:
                  print('Future collision detected between vehicle_1 and vehicle_3! Correcting course...')
                  self.vehicle_1_steer_inc = -6
                  self.vehicle_1_engine_force = 30
@@ -494,7 +494,7 @@ class main(ShowBase):
                  self.vehicle_3_engine_force = 0
                  self.vehicle_3_brake_force = 200
                  
-             if v_dist_3 > 11:
+             if v_dist_3 > 12:
                  print('Course clear, driving...')
                  self.vehicle_3_steer_inc = 6
                  self.vehicle_3_engine_force = 100
