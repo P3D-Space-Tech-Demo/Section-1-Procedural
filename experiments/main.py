@@ -343,13 +343,13 @@ class Elevator:
         self.platform_connector.set_h(-90.)
         self.platform_z_min = self.platform.get_z()
         self.platform_speed = 5.
-        self.shutter_angle = 44.8  # controls aperture of iris
-        self.shutter_speed = 40.
-        self.shutters = []
+        self.blade_angle = 44.8  # controls aperture of shutter
+        self.blade_speed = 40.
+        self.blades = []
 
-        for shutter in self.model.find_all_matches("**/shutter.*"):
-            shutter.set_h(self.shutter_angle)
-            self.shutters.append(shutter)
+        for blade in self.model.find_all_matches("**/blade.*"):
+            blade.set_h(self.blade_angle)
+            self.blades.append(blade)
 
     def raise_platform(self, task):
 
@@ -402,28 +402,28 @@ class Elevator:
 
         self.idle = False
         dt = globalClock.get_dt()
-        self.shutter_angle -= self.shutter_speed * dt
+        self.blade_angle -= self.blade_speed * dt
         r = task.cont
 
-        if self.shutter_angle <= 0.:
-            self.shutter_angle = 0.
+        if self.blade_angle <= 0.:
+            self.blade_angle = 0.
             r = task.done
             base.task_mgr.add(self.raise_platform, "raise_platform")
 
-        for shutter in self.shutters:
-            shutter.set_h(self.shutter_angle)
+        for blade in self.blades:
+            blade.set_h(self.blade_angle)
 
         return r
 
     def close_iris(self, task):
 
         dt = globalClock.get_dt()
-        self.shutter_angle += self.shutter_speed * dt
+        self.blade_angle += self.blade_speed * dt
         r = task.cont
 
-        if self.shutter_angle >= 44.8:
+        if self.blade_angle >= 44.8:
 
-            self.shutter_angle = 44.8
+            self.blade_angle = 44.8
             r = task.done
             self.idle = True
 
@@ -432,8 +432,8 @@ class Elevator:
                 self.bot.model.detach_node()
                 self.bot = None
 
-        for shutter in self.shutters:
-            shutter.set_h(self.shutter_angle)
+        for blade in self.blades:
+            blade.set_h(self.blade_angle)
 
         return r
 
