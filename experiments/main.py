@@ -169,11 +169,15 @@ class WorkerBot(Worker):
         dist_vec = Vec3(target_vec)
         target_vec *= self.start_dist - dist
         dot = self.speed_vec.dot(dist_vec)
-        frac = min(1., (.35 + 100 * (1. - (dot + 1.) * .5)) * dt * self.start_dist / dist)
 
         if dot <= 0.:
             target_vec = dist_vec * 100.
 #            print("Course corrected!")
+
+        if dist <= 1.0e-6:
+            frac = 0.
+        else:
+            frac = min(1., (.35 + 100 * (1. - (dot + 1.) * .5)) * dt * self.start_dist / dist)
 
         # to interpolate the speed vector, it is shortened by a small fraction,
         # while that same fraction of the target vector is added to it;
