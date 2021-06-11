@@ -299,7 +299,7 @@ class Job:
     def create_mirror(self, primitives, component, component_id):
         """
         Create a job that generates parts of a ship component that is a mirrored
-        copy of another, relative to the X-axis.
+        copy of another, relative to the YZ-plane.
 
         """
 
