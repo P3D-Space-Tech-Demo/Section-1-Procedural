@@ -4,8 +4,7 @@ from random import random
 import array
 import gltf
 
-
-load_prc_file_data("", "sync-video #f")
+load_prc_file_data("", "sync-video false")
 
 
 base = ShowBase()
@@ -26,8 +25,8 @@ def create_beam():
         data.extend((x, 0., z, x, 1., z))
         vert_count += 2
 
-    vertex_format = GeomVertexFormat.get_v3()
-    v_data = GeomVertexData("data", vertex_format, GeomEnums.UH_static)
+    v_format = GeomVertexFormat.get_v3()
+    v_data = GeomVertexData("data", v_format, GeomEnums.UH_static)
     data_array = v_data.modify_array(0)
     data_array.unclean_set_num_rows(vert_count)
     view = memoryview(data_array).cast("B").cast("f")
@@ -55,17 +54,46 @@ def create_beam():
     return beam
 
 
+class IdleWorkers:
+
+    workers = {"bot": [], "drone": []}
+    beam = None
+
+    @classmethod
+    def pop(cls, worker_type):
+
+        workers = cls.workers[worker_type]
+
+        if workers:
+            return workers.pop(0)
+
+        if not cls.beam:
+            cls.beam = create_beam()
+            cls.beam.set_scale(.1)
+
+        if worker_type == "bot":
+            return WorkerBot(cls.beam)
+        elif worker_type == "drone":
+            return WorkerDrone(cls.beam)
+
+    @classmethod
+    def add(cls, worker):
+
+        cls.workers[worker.type].insert(0, worker)
+
+
 class Worker:
 
-    idle_units = {"bot": [], "drone": []}
-
-    def __init__(self, worker_type, model, beam):
+    def __init__(self, worker_type, model, beam, pivot_offset):
 
         self.type = worker_type
         self.model = model
         self.beam = beam.copy_to(self.model)
-        self.ready = False
-        self.idle_units[worker_type].append(self)
+        self.start_job = lambda: None
+        self.pivot_offset = pivot_offset  # pivot offset from model center
+
+        if worker_type == "drone":
+            model.reparent_to(base.render)
 
     def do_job(self, job, finalizer, start=False):
 
@@ -82,19 +110,18 @@ class Worker:
             deactivation_task = lambda task: self.set_part(None)
             base.task_mgr.add(deactivation_task, "deactivate_beam", delay=1.5)
 
-            def move_to_elevator(task):
+            def move_to_elevator(task, elevator):
 
-                elevator = self.get_nearest_elevator(self.model.get_y())
-
-                if elevator.ready:
+                if elevator.ready and elevator.waiting_bots[0] is self:
                     pos = elevator.model.get_pos()
-                    self.target_point = pos + (self.model.get_pos() - pos).normalized() * .8875
+                    model_pos = self.model.get_pos()
+                    pivot_offset_vec = (pos - model_pos).normalized() * self.pivot_offset
+                    # make sure the worker model gets centered on the elevator platform
+                    self.target_point = pos + pivot_offset_vec
                     target_vec = self.target_point - self.model.get_pos()
                     self.start_dist = target_vec.length()
                     base.task_mgr.add(self.move, "move_bot")
                     self._do_job = lambda: elevator.add_request(lambda: elevator.lower_bot(self))
-                    elevator.ready = False
-#                    print("Job done, returning!")
                     return
 
                 return task.cont
@@ -105,26 +132,27 @@ class Worker:
                 base.task_mgr.add(continue_job, "continue_job", delay=delay)
             elif self.type == "bot":
                 elevator = self.get_nearest_elevator(self.model.get_y())
-                elevator.add_request(lambda: base.task_mgr.add(elevator.open_iris, "open_iris"))
+                elevator.await_bot(self)
                 delay = 1.6 + random()
-                self.final_task = base.task_mgr.add(move_to_elevator, "move_to_elevator", delay=delay)
+                base.task_mgr.add(lambda task: move_to_elevator(task, elevator),
+                    "move_to_elevator", delay=delay)
 
         self._do_job = do_job
 
         if start and self.type == "bot":
             self.start_job = lambda: self.set_part(part)
-            elevator = self.get_nearest_elevator(part.center.y)
-            elevator.add_request(lambda: elevator.raise_bot(self))
+            elevator = self.get_nearest_elevator(job.start_pos.y)
+            elevator.add_request(lambda: elevator.raise_bot(self, job.start_pos))
         else:
             self.set_part(part)
 
-    def get_nearest_elevator(self, start_y):
+    def get_nearest_elevator(self, y):
 
         shortest_dist = 1000000.
 
         for elevator in Elevator.instances:
 
-            dist = abs(elevator.start_y - start_y)
+            dist = abs(elevator.y - y)
 
             if dist < shortest_dist:
                 shortest_dist = dist
@@ -135,9 +163,11 @@ class Worker:
 
 class WorkerBot(Worker):
 
-    def __init__(self, model, beam):
+    def __init__(self, beam):
 
-        Worker.__init__(self, "bot", model, beam)
+        model = base.loader.load_model("models/worker_bot.gltf")
+
+        Worker.__init__(self, "bot", model, beam, -.8875)
 
         self.beam.set_pos(0., 1.325, 1.92)
         self.beam.set_sy(.1)
@@ -152,7 +182,7 @@ class WorkerBot(Worker):
     def set_part(self, part):
 
         if part:
-            x, y, z = part.center
+            x, y, z = part.worker_pos
             self.target_point = Point3(x, y, 0.)
             target_vec = self.target_point - self.model.get_pos()
             self.start_dist = target_vec.length()
@@ -169,15 +199,11 @@ class WorkerBot(Worker):
         dist_vec = Vec3(target_vec)
         target_vec *= self.start_dist - dist
         dot = self.speed_vec.dot(dist_vec)
+        frac = min(1., (.35 + 100 * (1. - (dot + 1.) * .5)) * dt * self.start_dist / dist)
 
         if dot <= 0.:
             target_vec = dist_vec * 100.
 #            print("Course corrected!")
-
-        if dist <= 1.0e-6:
-            frac = 0.
-        else:
-            frac = min(1., (.35 + 100 * (1. - (dot + 1.) * .5)) * dt * self.start_dist / dist)
 
         # to interpolate the speed vector, it is shortened by a small fraction,
         # while that same fraction of the target vector is added to it;
@@ -225,17 +251,19 @@ class WorkerBot(Worker):
 
 class WorkerDrone(Worker):
 
-    def __init__(self, model, beam):
+    def __init__(self, beam):
 
-        Worker.__init__(self, "drone", model, beam)
+        model = base.loader.load_model("models/worker_drone.gltf")
+
+        Worker.__init__(self, "drone", model, beam, 0.)
 
         self.beam.set_sy(.1)
 
     def set_part(self, part):
 
         if part:
-            x, y, z = part.center
-            self.model.set_pos(x, y, z + 10.)
+            x, y, z = part.worker_pos
+            self.model.set_pos(x, y, z)
             self._do_job()
         else:
             self.beam.set_sy(.1)
@@ -243,12 +271,15 @@ class WorkerDrone(Worker):
 
 class Job:
 
-    def __init__(self, primitives, vertex_data, worker_type, next_jobs):
+    def __init__(self, primitives, component, component_id, worker_type, worker_pos, next_jobs):
 
         self.primitives = primitives
-        self.vertex_data = vertex_data
+        self.component = component
+        self.component_id = component_id
         self.length = len(primitives)
         self.worker_type = worker_type
+        self.worker_pos = worker_pos
+        self.start_pos = Point3(*worker_pos[0])
         self.next_jobs = {}
         self.is_assigned = False
 
@@ -265,6 +296,21 @@ class Job:
 
         return len(self.primitives)
 
+    def create_mirror(self, primitives, component, component_id):
+        """
+        Create a job that generates parts of a ship component that is a mirrored
+        copy of another, relative to the X-axis.
+
+        """
+
+        worker_pos = []
+
+        for pos in self.worker_pos:
+            x, y, z = pos
+            worker_pos.append(Point3(-x, y, z))
+
+        return Job(primitives, component, component_id, self.worker_type, worker_pos, [])
+
     @property
     def done(self):
 
@@ -272,6 +318,13 @@ class Job:
 
     @property
     def next_job_index(self):
+        """
+        Return the index of the next job in the list of available jobs.
+        What this next job is depends on the number of parts currently generated.
+        Return -1 if no next job is scheduled at this time (i.e. if there is
+        none associated with a delay equal to that number of parts).
+
+        """
 
         return self.next_jobs.get(self.parts_done, -1)
 
@@ -285,24 +338,28 @@ class Job:
             return
 
         prim = self.primitives.pop(0)
+        worker_pos = self.worker_pos.pop(0)
 
-        return Part(self, self.vertex_data, prim)
+        return Part(self, self.component, prim, worker_pos)
 
 
 class Part:
 
-    def __init__(self, job, vertex_data, primitive):
+    def __init__(self, job, component, primitive, worker_pos):
 
         self.job = job
+        vertex_data = component.node().modify_geom(0).get_vertex_data()
         geom = Geom(vertex_data)
         geom.add_primitive(primitive)
         self.primitive = primitive
+        self.worker_pos = worker_pos
         node = GeomNode("part")
         node.add_geom(geom)
         self.model = NodePath(node)
         self.model.set_transparency(TransparencyAttrib.M_alpha)
         self.model.set_color(1., 1., 0., 1.)
         self.model.set_alpha_scale(0.)
+        self.model.set_transform(component.get_net_transform())
         p_min, p_max = self.model.get_tight_bounds()
         self.center = p_min + (p_max - p_min) * .5
 
@@ -328,23 +385,23 @@ class Elevator:
 
     instances = []
 
-    def __init__(self, start_y):
+    def __init__(self, y):
 
         self.instances.append(self)
-        self.model = base.loader.load_model("models/builder_bot_elevator.gltf")
+        self.model = base.loader.load_model("models/worker_bot_elevator.gltf")
         self.model.reparent_to(base.render)
-        self.model.set_y(start_y)
-        self.start_y = start_y
+        self.model.set_y(y)
+        self.y = y
         self.ready = False
         self.idle = True
+        self.closed = True
         self.requests = []
+        self.waiting_bots = []
         self.bot = None
         self.platform = self.model.find("**/platform")
         # create a node to attach a bot to, such that the latter ends up
         # being centered on the platform
         self.platform_connector = self.platform.attach_new_node("bot_connector")
-        self.platform_connector.set_x(-.8875)
-        self.platform_connector.set_h(-90.)
         self.platform_z_min = self.platform.get_z()
         self.platform_speed = 5.
         self.blade_angle = 44.8  # controls aperture of shutter
@@ -405,6 +462,7 @@ class Elevator:
     def open_iris(self, task):
 
         self.idle = False
+        self.closed = False
         dt = globalClock.get_dt()
         self.blade_angle -= self.blade_speed * dt
         r = task.cont
@@ -430,30 +488,59 @@ class Elevator:
             self.blade_angle = 44.8
             r = task.done
             self.idle = True
+            self.closed = True
 
             if self.bot:
-                Worker.idle_units[self.bot.type].insert(0, self.bot)
+
+                IdleWorkers.add(self.bot)
+                self.waiting_bots.remove(self.bot)
                 self.bot.model.detach_node()
                 self.bot = None
+
+                if self.waiting_bots:
+                    request = lambda: base.task_mgr.add(self.open_iris, "open_iris")
+                    self.add_request(request, index=0)
 
         for blade in self.blades:
             blade.set_h(self.blade_angle)
 
         return r
 
-    def raise_bot(self, bot):
+    def await_bot(self, bot):
 
-        if self.platform.get_z() < 0.:
+        self.waiting_bots.append(bot)
+        request = lambda: base.task_mgr.add(self.open_iris, "open_iris")
+        self.add_request(request)
+
+    def raise_bot(self, bot, start_pos):
+
+        def open_iris():
+
             self.bot = bot
-            bot.model.set_pos_hpr(0., 0., 0., 0., 0., 0.)
+            bot.model.set_pos_hpr(0., bot.pivot_offset, 0., 0., 0., 0.)
             bot.model.reparent_to(self.platform_connector)
+            vec = start_pos - self.model.get_pos()
+            quat = Quat()
+            look_at(quat, vec, Vec3.up())
+            h, p, r = quat.get_hpr()
+            self.platform_connector.set_h(h)
             base.task_mgr.add(self.open_iris, "open_iris")
-        else:
-            self.add_request(lambda: self.raise_bot(bot), index=0)
-            request = lambda: base.task_mgr.add(self.lower_platform, "lower_platform")
-            self.add_request(request, index=0)
 
-        self.cam_target.reparent_to(self.model)
+        def raise_if_none_waiting(task):
+
+            if self.waiting_bots:
+                return task.cont
+
+            if self.closed:
+                self.add_request(open_iris)
+            else:
+                lower_platform = lambda: base.task_mgr.add(self.lower_platform, "lower_platform")
+                self.add_request(lower_platform)
+                self.add_request(open_iris)
+
+            self.cam_target.reparent_to(self.model)
+
+        base.task_mgr.add(raise_if_none_waiting, "raise_if_none_waiting")
 
     def lower_bot(self, bot):
 
@@ -486,8 +573,6 @@ class Demo:
 
     def __init__(self):
 
-        base.disableMouse()
-
         # set up light sources
         p_light = PointLight("point_light")
         p_light.set_color((.5, .5, .5, 1.))
@@ -500,6 +585,16 @@ class Demo:
         self.light2.set_pos(10., 0., 50.)
         base.render.set_light(self.light2)
 
+        # set up camera control
+        self.cam_heading = 180.
+        self.cam_target = base.render.attach_new_node("cam_target")
+        self.cam_target.set_z(10.)
+        self.cam_target.set_h(self.cam_heading)
+        base.camera.reparent_to(self.cam_target)
+        base.camera.set_y(-150.)
+        base.disable_mouse()
+        base.task_mgr.add(self.move_camera, "move_camera")
+
         base.set_background_color(0.3, 0.3, 0.3)
         self.setup_elevator_camera()
 
@@ -509,72 +604,92 @@ class Demo:
 
         base.task_mgr.add(Elevator.handle_requests, "handle_elevator_requests")
 
-        # the `starship.bam` model needs to be created using the `create_starship.py`
-        # script in the `starship` folder
-        self.model = base.loader.load_model("models/starship.bam")
-        self.model.reparent_to(base.render)
+        starship_id = "starship_a"  # should be determined by user
+        self.starship_components = {}
 
-        p_min, p_max = self.model.get_tight_bounds()
-        ship_size = (p_max - p_min).length()
-        self.cam_dist = ship_size
-        self.cam_heading = 180.
-        self.cam_target = base.render.attach_new_node("cam_target")
-        x, y, z = self.model.get_pos()
-        self.cam_target.set_pos(x, y, 10.)
-        self.cam_target.set_h(self.cam_heading)
-        base.camera.reparent_to(self.cam_target)
-        base.camera.set_y(-self.cam_dist)
+        model_root = base.loader.load_model(f"models/{starship_id}.bam")
+        model_root.reparent_to(base.render)
+        model_root.set_color(1., 1., 1., 1.)
 
-        beam = create_beam()
-        beam.set_scale(.1)
-        offset = (p_max - p_min).y / 10.
+        for model in model_root.find_all_matches("**/+GeomNode"):
+            component_id = model.parent.name
+            self.starship_components[component_id] = model
 
-        for i in range(6):
-            model = base.loader.load_model("models/builder_bot.gltf")
-            bot = WorkerBot(model, beam)
-            model = base.loader.load_model("models/builder_copter.fbx")
-            model.reparent_to(base.render)
-            model.set_pos(0., p_max.y - offset * i, 20.)
-            drone = WorkerDrone(model, beam)
+        for mirror_node in model_root.find_all_matches("**/mirror_*"):
 
-        bounds = self.model.node().get_bounds()
-        geom = self.model.node().modify_geom(0)
-        self.vertex_data = geom.get_vertex_data()
-        new_prim = GeomTriangles(GeomEnums.UH_static)
-        new_prim.set_index_type(GeomEnums.NT_uint32)
+            component_id = mirror_node.name
+            model = self.starship_components[component_id.replace("mirror_", "")]
+            model = model.parent.copy_to(model_root).children[0]
+            parent = model.parent
+            parent.set_sx(parent, -1.)
+            x, y, z = parent.get_pos()
+            parent.set_pos(0., 0., 0.)
+            parent.flatten_light()  # bake negative scale into vertices
+            parent.set_pos(-x, y, z)
+            geom = model.node().modify_geom(0)
+            geom.reverse_in_place()
 
-        primitives = [prim for prim in geom.primitives]
+            for i in range(geom.get_num_primitives()):
+                prim = geom.modify_primitive(i)
+                prim.set_index_type(GeomEnums.NT_uint32)
 
-        self.parse_job_schedule()
+            self.starship_components[component_id] = model
+            mirror_node.detach_node()
+
         self.jobs = []
+        self.mirror_jobs = {}
+        primitives = {}
 
-        for job_data in self.job_schedule:
+        for component_id, component in self.starship_components.items():
+            node = component.node()
+            bounds = node.get_bounds()
+            geom = node.modify_geom(0)
+            vertex_data = geom.get_vertex_data()
+            new_prim = GeomTriangles(GeomEnums.UH_static)
+            new_prim.set_index_type(GeomEnums.NT_uint32)
+            primitives[component_id] = [prim for prim in geom.primitives]
+            geom.clear_primitives()
+            geom.add_primitive(new_prim)
+            node.set_bounds(bounds)
+            node.set_final(True)
+
+        for job_data in self.parse_job_schedule(starship_id):
             part_count = job_data["part_count"]
-            job_data_ = job_data.copy()
-            del job_data_["part_count"]
-            job = Job(primitives[:part_count], self.vertex_data, **job_data_)
+            del job_data["part_count"]
+            component_id = job_data["component_id"]
+            component = self.starship_components[component_id]
+            prims = primitives[component_id][:part_count]
+            job = Job(prims, component, **job_data)
             self.jobs.append(job)
-            del primitives[:part_count]
+            del primitives[component_id][:part_count]
+            mirror_component_id = "mirror_" + component_id
+
+            if mirror_component_id in self.starship_components:
+                component = self.starship_components[mirror_component_id]
+                prims = primitives[mirror_component_id][:part_count]
+                mirror_job = job.create_mirror(prims, component, component_id)
+                self.mirror_jobs[component_id] = mirror_job
+                del primitives[mirror_component_id][:part_count]
+
+        # prune any invalid jobs
+        self.jobs = [j for j in self.jobs if j]
 
         job = self.jobs[0]
-        worker = Worker.idle_units[job.worker_type].pop(0)
-
-        geom.clear_primitives()
-        geom.add_primitive(new_prim)
-        self.model.node().set_bounds(bounds)
-        self.model.node().set_final(True)
-        base.task_mgr.add(self.move_camera, "move_camera")
-        task = lambda t: self.check_job(t, job, worker)
-        base.task_mgr.add(task, "check_job")
-        worker.do_job(job, self.add_primitive, start=True)
+        worker = IdleWorkers.pop(job.worker_type)
+        check_job = lambda task: self.check_job(task, job, worker)
+        base.task_mgr.add(check_job, "check_job")
+        finalizer = lambda prim: self.add_primitive(job.component, prim)
+        worker.do_job(job, finalizer, start=True)
         job.is_assigned = True
+        self.add_mirror_job(job)
 
-    def parse_job_schedule(self):
+    def parse_job_schedule(self, starship_id):
 
-        self.job_schedule = []
+        job_schedule = []
+        read_coords = False
         read_next_jobs = False
 
-        with open("jobs.txt") as job_file:
+        with open(f"jobs_{starship_id}.txt") as job_file:
 
             for line in job_file:
 
@@ -584,22 +699,33 @@ class Demo:
                     continue
                 elif not line:
                     job_data = {}
-                    self.job_schedule.append(job_data)
+                    job_schedule.append(job_data)
+                    continue
+                elif line.startswith("worker_pos"):
+                    read_coords = True
+                    worker_pos = []
+                    job_data["worker_pos"] = worker_pos
                     continue
                 elif line.startswith("next_jobs"):
+                    read_coords = False
                     read_next_jobs = True
                     next_jobs_data = []
                     job_data["next_jobs"] = next_jobs_data
                     continue
                 elif not line.startswith(" "):
+                    read_coords = False
                     read_next_jobs = False
 
-                prop, val = [x.strip() for x in line.split()]
+                if read_coords:
+                    coords = [float(x.strip()) for x in line.split()]
+                else:
+                    prop, val = [x.strip() for x in line.split()]
+                    if prop == "part_count":
+                        val = int(val)
 
-                if prop == "part_count":
-                    val = int(val)
-
-                if read_next_jobs:
+                if read_coords:
+                    worker_pos.append(coords)
+                elif read_next_jobs:
                     val = int(val)
                     if prop == "rel_index":
                         next_job_data = {prop: val}
@@ -608,6 +734,8 @@ class Demo:
                         next_job_data[prop] = val
                 else:
                     job_data[prop] = val
+
+        return job_schedule
 
     def move_camera(self, task):
 
@@ -618,7 +746,7 @@ class Demo:
 
     def setup_elevator_camera(self):
 
-        self.elevator_display_region = dr = base.win.make_display_region(.05, .45, .05, .45)
+        self.elevator_display_region = dr = base.win.make_display_region(.05, .35, .05, .45)
         dr.sort = 10
         dr.set_clear_color_active(True)
         dr.set_clear_depth_active(True)
@@ -629,17 +757,35 @@ class Demo:
         cam.set_y(-10.)
         dr.camera = cam
 
-    def add_primitive(self, prim):
+    def add_primitive(self, component, prim):
 
         prim_array = prim.get_vertices()
         prim_view = memoryview(prim_array).cast("B").cast("I")
-        geom = self.model.node().modify_geom(0)
+        geom = component.node().modify_geom(0)
         new_prim = geom.modify_primitive(0)
         new_prim_array = new_prim.modify_vertices()
         old_size = new_prim_array.get_num_rows()
         new_prim_array.set_num_rows(old_size + len(prim_view))
         new_prim_view = memoryview(new_prim_array).cast("B").cast("I")
         new_prim_view[old_size:] = prim_view[:]
+
+    def add_mirror_job(self, job):
+
+        if job.component_id not in self.mirror_jobs:
+            return
+
+        mirror_job = self.mirror_jobs[job.component_id]
+
+        def start_mirror_job(task):
+
+            worker = IdleWorkers.pop(mirror_job.worker_type)
+            check_job = lambda task: self.check_job(task, mirror_job, worker)
+            base.task_mgr.add(check_job, "check_job")
+            finalizer = lambda prim: self.add_primitive(mirror_job.component, prim)
+            worker.do_job(mirror_job, finalizer, start=True)
+            mirror_job.is_assigned = True
+
+        base.task_mgr.add(start_mirror_job, "start_mirror_job", delay=1.5)
 
     def check_job(self, task, job, worker):
 
@@ -651,17 +797,19 @@ class Demo:
             next_job = self.jobs[index + next_job_index]
 
             if not next_job.is_assigned:
-                next_worker = Worker.idle_units[next_job.worker_type].pop(0)
-                next_worker.do_job(next_job, self.add_primitive, start=True)
+                next_worker = IdleWorkers.pop(next_job.worker_type)
+                finalizer = lambda prim: self.add_primitive(next_job.component, prim)
+                next_worker.do_job(next_job, finalizer, start=True)
                 next_job.is_assigned = True
                 next_check = lambda task: self.check_job(task, next_job, next_worker)
                 base.task_mgr.add(next_check, "check_job")
+                self.add_mirror_job(next_job)
 
         if not job.done:
             return task.cont
 
         if worker.type == "drone":
-            Worker.idle_units[worker.type].insert(0, worker)
+            IdleWorkers.add(worker)
 
 
 Demo()
