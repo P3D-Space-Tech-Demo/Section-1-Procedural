@@ -3,153 +3,185 @@
 from panda3d.core import *
 import os
 import array
+import gltf
 
 
 loader = Loader.get_global_ptr()
 loader_options = LoaderOptions(LoaderOptions.LF_no_cache)
+gltf.patch_loader(loader)
 
-models = []
-model_names = []
-
-original_format = GeomVertexFormat.get_v3n3t2()
-
-# define custom vertex format with float color column
+# define custom, multi-array vertex format with separate float color column
+enums = GeomEnums
+float32 = enums.NT_float32
 vertex_format = GeomVertexFormat()
 array_format = GeomVertexArrayFormat()
-array_format.add_column(InternalName.get_vertex(), 3, GeomEnums.NT_float32, GeomEnums.C_point)
-array_format.add_column(InternalName.get_normal(), 3, GeomEnums.NT_float32, GeomEnums.C_normal)
-array_format.add_column(InternalName.get_texcoord(), 2, GeomEnums.NT_float32, GeomEnums.C_texcoord)
-array_format.add_column(InternalName.get_color(), 4, GeomEnums.NT_float32, GeomEnums.C_color)
-vertex_format.add_array(array_format)
-float_color_format = GeomVertexFormat.register_format(vertex_format)
-
-# define custom vertex format with a separate int color column
-vertex_format = GeomVertexFormat()
-array_format = GeomVertexArrayFormat()
-array_format.add_column(InternalName.get_vertex(), 3, GeomEnums.NT_float32, GeomEnums.C_point)
-array_format.add_column(InternalName.get_normal(), 3, GeomEnums.NT_float32, GeomEnums.C_normal)
-array_format.add_column(InternalName.get_texcoord(), 2, GeomEnums.NT_float32, GeomEnums.C_texcoord)
+array_format.add_column(InternalName.get_vertex(), 3, float32, enums.C_point)
+array_format.add_column(InternalName.get_normal(), 3, float32, enums.C_normal)
+array_format.add_column(InternalName.get_texcoord(), 2, float32, enums.C_texcoord)
 vertex_format.add_array(array_format)
 array_format = GeomVertexArrayFormat()
-array_format.add_column(InternalName.get_color(), 4, GeomEnums.NT_uint8, GeomEnums.C_color)
+array_format.add_column(InternalName.get_color(), 4, float32, enums.C_color)
 vertex_format.add_array(array_format)
-int_color_format = GeomVertexFormat.register_format(vertex_format)
+multi_array_format = GeomVertexFormat.register_format(vertex_format)
 
-# collect all model names
-for name in os.listdir("models"):
-    if os.path.splitext(name)[1].lower() in (".bam", ".egg", ".fbx", ".gltf"):
-        model_names.append(name)
+def process_geom_node(node_path):
 
-# load all models
-for name in model_names:
-    n = Filename.from_os_specific(name)
-    print("name:", name)
-    model = NodePath(loader.load_sync(f"models/{name}", loader_options))
-    for node in model.find_all_matches("**/+GeomNode"):
-        node.node().modify_geom(0).modify_vertex_data().format = float_color_format
-    model.flatten_strong()  # bake the transforms into the vertices
-    for node in model.find_all_matches("**/+GeomNode"):
-        models.append(node)
-
-tmp_data_views = []
-tmp_prim_views = []
-sorted_indices = []
-vert_count = 0
-prim_vert_count = 0
-
-# process all models
-for model in models:
-
-    geom = model.node().modify_geom(0)
-    v_data = geom.get_vertex_data()
+    sorted_indices = []
+    geom = node_path.node().modify_geom(0)
+    v_data = geom.modify_vertex_data()
     tmp_v_data = GeomVertexData(v_data)
-    tmp_v_data.format = float_color_format
-    data_size = tmp_v_data.get_num_rows()
-    tmp_data_view = memoryview(tmp_v_data.arrays[0]).cast("B").cast("f")
-    tmp_data_views.append(tmp_data_view)
-    tmp_v_data.format = int_color_format
+    tmp_v_data.format = multi_array_format
     color_array = tmp_v_data.arrays[1]
-    color_view = memoryview(color_array).cast("B")
-    prim = geom.modify_primitive(0)
-    prim.set_index_type(GeomEnums.NT_uint32)
-    prim_size = prim.get_num_vertices()
-    prim.offset_vertices(vert_count, 0, prim_size)
-    prim_view = memoryview(prim.get_vertices()).cast("B").cast("I")
-    tmp_prim_views.append(prim_view)
+    color_view = memoryview(color_array).cast("B").cast("f")
+    old_prim = geom.modify_primitive(0)
+    old_prim.set_index_type(enums.NT_uint32)
+    old_prim_view = memoryview(old_prim.get_vertices()).cast("B").cast("I")
 
     for j, color in enumerate(color_view[i:i+4] for i in range(0, len(color_view), 4)):
-        r, g, b, a = color
+        r, g, b, a = [int(round(encode_sRGB_float(x) * 255.)) for x in color]
         sort = r << 16 | g << 8 | b
-        sorted_indices.append((sort, vert_count + j))
+        sorted_indices.append((sort, j))
 
-    vert_count += data_size
-    prim_vert_count += prim_size
+    sorted_indices.sort()
+    sort_values = [i[0] for i in sorted_indices]
+    sorted_indices = [i[1] for i in sorted_indices]
 
-sorted_indices.sort()
-sort_values = [i[0] for i in sorted_indices]
-sorted_indices = [i[1] for i in sorted_indices]
+    sorted_tris = []
 
-new_data = GeomVertexData("data", float_color_format, GeomEnums.UH_static)
-data_array = new_data.modify_array(0)
-data_array.set_num_rows(vert_count)
-new_data_view = memoryview(data_array).cast("B").cast("f")
-start = 0
+    for tri in (old_prim_view[i:i+3] for i in range(0, len(old_prim_view), 3)):
+        tri_indices = [sorted_indices.index(i) for i in tri]
+        sorted_tris.append((min(tri_indices), tri.tolist()))
 
-for tmp_data_view in tmp_data_views:
-    end = start + len(tmp_data_view)
-    new_data_view[start:end] = tmp_data_view
-    start = end
-
-new_data.format = original_format
-
-tmp_prim = GeomTriangles(GeomEnums.UH_static)
-tmp_prim.set_index_type(GeomEnums.NT_uint32)
-prim_array = tmp_prim.modify_vertices()
-prim_array.set_num_rows(prim_vert_count)
-prim_view = memoryview(prim_array).cast("B").cast("I")
-start = 0
-
-for tmp_prim_view in tmp_prim_views:
-    end = start + len(tmp_prim_view)
-    prim_view[start:end] = tmp_prim_view
-    start = end
-
-sorted_tris = []
-
-for tri in (prim_view[i:i+3] for i in range(0, len(prim_view), 3)):
-    tri_indices = [sorted_indices.index(i) for i in tri]
-    sorted_tris.append((min(tri_indices), tri.tolist()))
-
-sorted_tris.sort(reverse=True)
-index, tri = sorted_tris.pop()
-sort_val = sort_values[index]
-tris = [tri]
-tris_by_sort = [tris]
-
-while sorted_tris:
-
+    sorted_tris.sort(reverse=True)
     index, tri = sorted_tris.pop()
-    next_sort_val = sort_values[index]
+    sort_val = sort_values[index]
+    tris = [tri]
+    tris_by_sort = [tris]
 
-    if next_sort_val == sort_val:
-        tris.append(tri)
-    else:
-        tris = [tri]
-        tris_by_sort.append(tris)
-        sort_val = next_sort_val
+    while sorted_tris:
 
-geom = Geom(new_data)
+        index, tri = sorted_tris.pop()
+        next_sort_val = sort_values[index]
 
-for tris in tris_by_sort:
-    new_prim = GeomTriangles(GeomEnums.UH_static)
-    new_prim.set_index_type(GeomEnums.NT_uint32)
-    prim_array = new_prim.modify_vertices()
-    tri_rows = sum(tris, [])
-    prim_array.set_num_rows(len(tri_rows))
-    new_prim_view = memoryview(prim_array).cast("B").cast("I")
-    new_prim_view[:] = array.array("I", tri_rows)
-    geom.add_primitive(new_prim)
+        if next_sort_val == sort_val:
+            tris.append(tri)
+        else:
+            tris = [tri]
+            tris_by_sort.append(tris)
+            sort_val = next_sort_val
 
-geom_node = GeomNode("starship")
-geom_node.add_geom(geom)
-NodePath(geom_node).write_bam_file("../models/starship.bam")
+    geom.clear_primitives()
+
+    for tris in tris_by_sort:
+        new_prim = GeomTriangles(enums.UH_static)
+        new_prim.set_index_type(enums.NT_uint32)
+        prim_array = new_prim.modify_vertices()
+        tri_rows = sum(tris, [])
+        prim_array.set_num_rows(len(tri_rows))
+        new_prim_view = memoryview(prim_array).cast("B").cast("I")
+        new_prim_view[:] = array.array("I", tri_rows)
+        geom.add_primitive(new_prim)
+
+
+def create_job_schedule(model, starship_id):
+
+    jobs = {}
+
+    def fill_job_data(job_data, node):
+
+        part_count = 0
+        worker_pos = []
+        job_data["worker_pos"] = worker_pos
+        next_job_data = []
+        job_data["next_jobs"] = next_job_data
+        children = node.children
+
+        while children:
+
+            next_children = None
+
+            for child in children:
+
+                name = child.name
+
+                if name.startswith("job_root"):
+                    new_job_data = fill_job_schedule(child)
+                    job_index = new_job_data["index"]
+                    rel_index = job_index - job_data["index"]
+                    next_job_data.append({"rel_index": rel_index, "delay": part_count})
+                elif name.startswith("job"):
+                    _, job_index, worker_type = name.split("_")
+                    job_index = int(job_index) - 1
+                    rel_index = job_index - job_data["index"]
+                    next_job_data.append({"rel_index": rel_index, "delay": part_count})
+                    jobs[job_index] = new_job_data = {}
+                    new_job_data["index"] = job_index
+                    new_job_data["component_id"] = job_data["component_id"]
+                    new_job_data["worker_type"] = worker_type
+                    fill_job_data(new_job_data, child)
+                elif name.startswith("part"):
+                    part_count += 1
+                    x, y, z = child.get_net_transform().get_pos()
+                    worker_pos.append((x, y, z))
+                    next_children = child.children
+
+            children = next_children
+
+        job_data["part_count"] = part_count
+
+    def fill_job_schedule(job_root):
+
+        child = job_root.children[0]
+        _, job_index, worker_type = child.name.split("_")
+        job_index = int(job_index) - 1
+        jobs[job_index] = job_data = {}
+        job_data["index"] = job_index
+        job_data["component_id"] = job_root.name.replace("job_root_", "")
+        job_data["worker_type"] = worker_type
+        fill_job_data(job_data, child)
+
+        return job_data
+
+    job_root = model.find("**/job_root_*")
+    job_root.detach_node()
+    fill_job_schedule(job_root)
+
+    with open(os.path.join("..", f"jobs_{starship_id}.txt"), "w") as job_file:
+
+        for i in range(len(jobs)):
+
+            job_file.write("\n")
+            job_data = jobs[i]
+            component_id = job_data["component_id"]
+            job_file.write(f"component_id {component_id}\n")
+            part_count = job_data["part_count"]
+            job_file.write(f"part_count {part_count}\n")
+            worker_type = job_data["worker_type"]
+            job_file.write(f"worker_type {worker_type}\n")
+            job_file.write("worker_pos\n")
+            worker_pos = job_data["worker_pos"]
+
+            for x, y, z in worker_pos:
+                job_file.write(f"    {x} {y} {z}\n")
+
+            job_file.write("next_jobs\n")
+            next_job_data = job_data["next_jobs"]
+
+            for data in next_job_data:
+                rel_index = data["rel_index"]
+                job_file.write(f"    rel_index {rel_index}\n")
+                delay = data["delay"]
+                job_file.write(f"    delay {delay}\n")
+
+
+for name in os.listdir("models"):
+
+    model = NodePath(loader.load_sync(f"models/{name}", loader_options))
+    starship_id = os.path.splitext(name)[0]
+    create_job_schedule(model, starship_id)
+
+    for node_path in model.find_all_matches("**/+GeomNode"):
+        process_geom_node(node_path)
+
+    new_name = starship_id + ".bam"
+    model.write_bam_file(f"../models/{new_name}")
