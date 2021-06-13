@@ -8,6 +8,7 @@ load_prc_file_data("", "sync-video false")
 
 
 base = ShowBase()
+base.set_frame_rate_meter(True)
 
 
 def create_beam():
@@ -49,7 +50,7 @@ def create_beam():
     node.add_geom(geom)
     beam = NodePath(node)
     beam.set_light_off()
-    beam.set_color(1., 0., 0., 1.)
+    beam.set_color(0.5, 0.5, 1., 1.)
 
     return beam
 
@@ -88,12 +89,54 @@ class Worker:
 
         self.type = worker_type
         self.model = model
-        self.beam = beam.copy_to(self.model)
+        self.beam_root = model.attach_new_node("beam_root")
+        self.beam_root.hide()
+        self.beams = [beam.copy_to(self.beam_root) for _ in range(4)]
+        self.part = None
         self.start_job = lambda: None
         self.pivot_offset = pivot_offset  # pivot offset from model center
 
         if worker_type == "drone":
             model.reparent_to(base.render)
+
+    def shoot_energy_beams(self, task):
+
+        from random import randint
+
+        if not self.part:
+            return
+
+        model = self.part.model
+        prim = self.part.primitive
+
+        if not model:
+            return
+
+        v_data = model.node().get_geom(0).get_vertex_data()
+        pos_reader = GeomVertexReader(v_data, "vertex")
+        tri_count = prim.get_num_primitives()
+        beam_root = self.beam_root
+
+        for beam in self.beams:
+            tri_index = randint(0, tri_count - 1)
+            index_offset1 = randint(0, 2)
+            index_offset2 = randint(0, 2)
+            vert_row1 = prim.get_vertex(tri_index * 3 + index_offset1)
+            vert_row2 = prim.get_vertex(tri_index * 3 + index_offset2)
+            pos_reader.set_row(vert_row1)
+            pos1 = pos_reader.get_data3()
+            pos_reader.set_row(vert_row2)
+            pos2 = pos_reader.get_data3()
+            vec = pos2 - pos1
+            pos = pos1 + vec * random()
+            pos = beam_root.get_relative_point(model, pos)
+            dist = pos.length()
+            beam.set_sy(dist)
+            beam.look_at(beam_root, pos)
+
+        task.delay_time = .01
+
+        return task.again
 
     def do_job(self, job, finalizer, start=False):
 
@@ -101,13 +144,12 @@ class Worker:
 
         def do_job():
 
-            dist = (part.center - self.beam.get_pos(base.render)).length()
-            self.beam.set_sy(dist)
-            self.beam.look_at(base.render, part.center)
+            self.beam_root.show()
+            base.task_mgr.add(self.shoot_energy_beams, "shoot_energy_beams", delay=0.)
             part.model.reparent_to(base.render)
             solidify_task = lambda task: part.solidify(task, 1.5, finalizer)
             base.task_mgr.add(solidify_task, "solidify")
-            deactivation_task = lambda task: self.set_part(None)
+            deactivation_task = lambda task: self.beam_root.hide()
             base.task_mgr.add(deactivation_task, "deactivate_beam", delay=1.5)
 
             def move_to_elevator(task, elevator):
@@ -169,8 +211,7 @@ class WorkerBot(Worker):
 
         Worker.__init__(self, "bot", model, beam, -.8875)
 
-        self.beam.set_pos(0., 1.325, 1.92)
-        self.beam.set_sy(.1)
+        self.beam_root.set_pos(0., 1.325, 1.92)
         self.turn_speed = 300.
         self.accel = 15.
         self.speed = 0.
@@ -181,14 +222,12 @@ class WorkerBot(Worker):
 
     def set_part(self, part):
 
-        if part:
-            x, y, z = part.worker_pos
-            self.target_point = Point3(x, y, 0.)
-            target_vec = self.target_point - self.model.get_pos()
-            self.start_dist = target_vec.length()
-            base.task_mgr.add(self.move, "move_bot")
-        else:
-            self.beam.set_sy(.1)
+        self.part = part
+        x, y, z = part.worker_pos
+        self.target_point = Point3(x, y, 0.)
+        target_vec = self.target_point - self.model.get_pos()
+        self.start_dist = target_vec.length()
+        base.task_mgr.add(self.move, "move_bot")
 
     def move(self, task):
 
@@ -257,16 +296,12 @@ class WorkerDrone(Worker):
 
         Worker.__init__(self, "drone", model, beam, 0.)
 
-        self.beam.set_sy(.1)
-
     def set_part(self, part):
 
-        if part:
-            x, y, z = part.worker_pos
-            self.model.set_pos(x, y, z)
-            self._do_job()
-        else:
-            self.beam.set_sy(.1)
+        self.part = part
+        x, y, z = part.worker_pos
+        self.model.set_pos(x, y, z)
+        self._do_job()
 
 
 class Job:
@@ -357,7 +392,8 @@ class Part:
         node.add_geom(geom)
         self.model = NodePath(node)
         self.model.set_transparency(TransparencyAttrib.M_alpha)
-        self.model.set_color(1., 1., 0., 1.)
+        self.model.set_light_off()
+        self.model.set_color(0.5, 0.5, 1., 1.)
         self.model.set_alpha_scale(0.)
         self.model.set_transform(component.get_net_transform())
         p_min, p_max = self.model.get_tight_bounds()
