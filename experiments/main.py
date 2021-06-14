@@ -11,11 +11,25 @@ base = ShowBase()
 base.set_frame_rate_meter(True)
 
 
+# define custom, multi-array vertex format with separate float color column
+enums = GeomEnums
+float32 = enums.NT_float32
+v_format = GeomVertexFormat()
+array_format = GeomVertexArrayFormat()
+array_format.add_column(InternalName.get_vertex(), 3, float32, enums.C_point)
+v_format.add_array(array_format)
+array_format = GeomVertexArrayFormat()
+array_format.add_column(InternalName.get_color(), 4, float32, enums.C_color)
+v_format.add_array(array_format)
+v_format = GeomVertexFormat.register_format(v_format)
+
+
 def create_beam():
 
     from math import pi, sin, cos
 
-    data = array.array("f", [])
+    pos_data = array.array("f", [])
+    col_data = array.array("f", [])
     segs = 6
     vert_count = 0
 
@@ -23,17 +37,20 @@ def create_beam():
         angle = pi * 2 / segs * i
         x = sin(angle)
         z = -cos(angle)
-        data.extend((x, 0., z, x, 1., z))
+        pos_data.extend((x, 0., z, x, 1., z))
+        col_data.extend((.5, .5, 1., 1., .5, .5, 1., .25))
         vert_count += 2
 
-    v_format = GeomVertexFormat.get_v3()
-    v_data = GeomVertexData("data", v_format, GeomEnums.UH_static)
-    data_array = v_data.modify_array(0)
-    data_array.unclean_set_num_rows(vert_count)
-    view = memoryview(data_array).cast("B").cast("f")
-    view[:] = data
+    v_data = GeomVertexData("data", v_format, enums.UH_static)
+    v_data.unclean_set_num_rows(vert_count)
+    pos_data_array = v_data.modify_array(0)
+    pos_view = memoryview(pos_data_array).cast("B").cast("f")
+    pos_view[:] = pos_data
+    col_data_array = v_data.modify_array(1)
+    col_view = memoryview(col_data_array).cast("B").cast("f")
+    col_view[:] = col_data
 
-    prim = GeomTriangles(GeomEnums.UH_static)
+    prim = GeomTriangles(enums.UH_static)
 
     for i in range(segs):
         i1 = i * 2
@@ -50,15 +67,52 @@ def create_beam():
     node.add_geom(geom)
     beam = NodePath(node)
     beam.set_light_off()
-    beam.set_color(0.5, 0.5, 1., 1.)
+    beam.set_transparency(TransparencyAttrib.M_alpha)
 
     return beam
+
+
+def create_beam_connector():
+
+    pos_data = array.array("f", [
+        0., 0., 0.,
+        0., 1., 0.,
+        0., 1., 0.
+    ])
+    col_data = array.array("f", [
+        .5, .5, 1., 1.,
+        .5, .5, 1., 0.,
+        .5, .5, 1., 0.
+    ])
+
+    v_data = GeomVertexData("data", v_format, enums.UH_static)
+    v_data.unclean_set_num_rows(3)
+    pos_data_array = v_data.modify_array(0)
+    pos_view = memoryview(pos_data_array).cast("B").cast("f")
+    pos_view[:] = pos_data
+    col_data_array = v_data.modify_array(1)
+    col_view = memoryview(col_data_array).cast("B").cast("f")
+    col_view[:] = col_data
+
+    prim = GeomTriangles(enums.UH_static)
+    prim.add_vertices(0, 1, 2)
+    geom = Geom(v_data)
+    geom.add_primitive(prim)
+    node = GeomNode("beam_connector")
+    node.add_geom(geom)
+    beam_connector = NodePath(node)
+    beam_connector.set_two_sided(True)
+    beam_connector.set_light_off()
+    beam_connector.set_transparency(TransparencyAttrib.M_alpha)
+
+    return beam_connector
 
 
 class IdleWorkers:
 
     workers = {"bot": [], "drone": []}
     beam = None
+    beam_connector = None
 
     @classmethod
     def pop(cls, worker_type):
@@ -71,11 +125,12 @@ class IdleWorkers:
         if not cls.beam:
             cls.beam = create_beam()
             cls.beam.set_scale(.1)
+            cls.beam_connector = create_beam_connector()
 
         if worker_type == "bot":
-            return WorkerBot(cls.beam)
+            return WorkerBot(cls.beam, cls.beam_connector)
         elif worker_type == "drone":
-            return WorkerDrone(cls.beam)
+            return WorkerDrone(cls.beam, cls.beam_connector)
 
     @classmethod
     def add(cls, worker):
@@ -85,13 +140,16 @@ class IdleWorkers:
 
 class Worker:
 
-    def __init__(self, worker_type, model, beam, pivot_offset):
+    def __init__(self, worker_type, model, beam, beam_connector, pivot_offset):
 
         self.type = worker_type
         self.model = model
-        self.beam_root = model.attach_new_node("beam_root")
+        self.generator = model.find("**/generator")
+        self.generator_start_z = self.generator.get_z()
+        self.beam_root = self.generator.attach_new_node("beam_root")
         self.beam_root.hide()
         self.beams = [beam.copy_to(self.beam_root) for _ in range(4)]
+        self.beam_connectors = [beam_connector.copy_to(self.beam_root) for _ in range(4)]
         self.part = None
         self.start_job = lambda: None
         self.pivot_offset = pivot_offset  # pivot offset from model center
@@ -116,6 +174,7 @@ class Worker:
         pos_reader = GeomVertexReader(v_data, "vertex")
         tri_count = prim.get_num_primitives()
         beam_root = self.beam_root
+        beam_positions = []
 
         for beam in self.beams:
             tri_index = randint(0, tri_count - 1)
@@ -130,56 +189,102 @@ class Worker:
             vec = pos2 - pos1
             pos = pos1 + vec * random()
             pos = beam_root.get_relative_point(model, pos)
+            beam_positions.append(pos)
             dist = pos.length()
             beam.set_sy(dist)
             beam.look_at(beam_root, pos)
+
+        beam_positions.append(beam_positions[0])
+        positions = zip(beam_positions[:-1], beam_positions[1:])
+
+        for (pos1, pos2), connector in zip(positions, self.beam_connectors):
+            v_data = connector.node().modify_geom(0).modify_vertex_data()
+            pos_data_array = v_data.modify_array(0)
+            pos_view = memoryview(pos_data_array).cast("B").cast("f")
+            pos_view[3:6] = array.array("f", [*pos1])
+            pos_view[6:9] = array.array("f", [*pos2])
 
         task.delay_time = .01
 
         return task.again
 
-    def do_job(self, job, finalizer, start=False):
+    def move_to_elevator(self, task, elevator):
+
+        if elevator.ready and elevator.waiting_bots[0] is self:
+            pos = elevator.model.get_pos()
+            model_pos = self.model.get_pos()
+            pivot_offset_vec = (pos - model_pos).normalized() * self.pivot_offset
+            # make sure the worker model gets centered on the elevator platform
+            self.target_point = pos + pivot_offset_vec
+            target_vec = self.target_point - self.model.get_pos()
+            self.start_dist = target_vec.length()
+            base.task_mgr.add(self.move, "move_bot")
+            self._do_job = lambda: elevator.add_request(lambda: elevator.lower_bot(self))
+            return
+
+        return task.cont
+
+    def continue_job(self, job):
+
+        if job:
+            self.do_job(job)
+        elif self.type == "bot":
+            elevator = self.get_nearest_elevator(self.model.get_y())
+            elevator.await_bot(self)
+            base.task_mgr.add(lambda task: self.move_to_elevator(task, elevator),
+                "move_to_elevator")
+
+    def do_job(self, job, start=False):
 
         part = job.generate_part()
+
+        def deactivation_task(task):
+
+            self.beam_root.hide()
+            base.task_mgr.add(deactivate_generator, "deactivate_generator")
 
         def do_job():
 
             self.beam_root.show()
             base.task_mgr.add(self.shoot_energy_beams, "shoot_energy_beams", delay=0.)
             part.model.reparent_to(base.render)
-            solidify_task = lambda task: part.solidify(task, 1.5, finalizer)
+            solidify_task = lambda task: part.solidify(task, 1.5)
             base.task_mgr.add(solidify_task, "solidify")
-            deactivation_task = lambda task: self.beam_root.hide()
-            base.task_mgr.add(deactivation_task, "deactivate_beam", delay=1.5)
+            base.task_mgr.add(deactivation_task, "deactivate_beams", delay=1.5)
 
-            def move_to_elevator(task, elevator):
+        def activate_generator(task):
 
-                if elevator.ready and elevator.waiting_bots[0] is self:
-                    pos = elevator.model.get_pos()
-                    model_pos = self.model.get_pos()
-                    pivot_offset_vec = (pos - model_pos).normalized() * self.pivot_offset
-                    # make sure the worker model gets centered on the elevator platform
-                    self.target_point = pos + pivot_offset_vec
-                    target_vec = self.target_point - self.model.get_pos()
-                    self.start_dist = target_vec.length()
-                    base.task_mgr.add(self.move, "move_bot")
-                    self._do_job = lambda: elevator.add_request(lambda: elevator.lower_bot(self))
-                    return
+            dt = globalClock.get_dt()
+            z = self.generator.get_z() + (.5 if self.type == "bot" else -.5) * dt
+            end_z = self.generator_start_z + (.25 if self.type == "bot" else -.25)
+            cond = z >= end_z if self.type == "bot" else z <= end_z
 
-                return task.cont
+            if cond:
+                self.generator.set_z(end_z)
+                do_job()
+                return
 
-            if job:
-                delay = 1.6 + random()
-                continue_job = lambda task: self.do_job(job, finalizer)
-                base.task_mgr.add(continue_job, "continue_job", delay=delay)
-            elif self.type == "bot":
-                elevator = self.get_nearest_elevator(self.model.get_y())
-                elevator.await_bot(self)
-                delay = 1.6 + random()
-                base.task_mgr.add(lambda task: move_to_elevator(task, elevator),
-                    "move_to_elevator", delay=delay)
+            self.generator.set_z(z)
 
-        self._do_job = do_job
+            return task.cont
+
+        def deactivate_generator(task):
+
+            dt = globalClock.get_dt()
+            z = self.generator.get_z() - (.5 if self.type == "bot" else -.5) * dt
+            end_z = self.generator_start_z
+            cond = z <= end_z if self.type == "bot" else z >= end_z
+
+            if cond:
+                self.generator.set_z(end_z)
+                self.continue_job(job)
+                return
+
+            self.generator.set_z(z)
+
+            return task.cont
+
+        self._do_job = lambda: base.task_mgr.add(activate_generator, "activate_generator")
 
         if start and self.type == "bot":
             self.start_job = lambda: self.set_part(part)
@@ -205,13 +310,12 @@ class Worker:
 
 class WorkerBot(Worker):
 
-    def __init__(self, beam):
+    def __init__(self, beam, beam_connector):
 
         model = base.loader.load_model("models/worker_bot.gltf")
 
-        Worker.__init__(self, "bot", model, beam, -.8875)
+        Worker.__init__(self, "bot", model, beam, beam_connector, -.8875)
 
-        self.beam_root.set_pos(0., 1.325, 1.92)
         self.turn_speed = 300.
         self.accel = 15.
         self.speed = 0.
@@ -290,11 +394,11 @@ class WorkerBot(Worker):
 
 class WorkerDrone(Worker):
 
-    def __init__(self, beam):
+    def __init__(self, beam, beam_connector):
 
         model = base.loader.load_model("models/worker_drone.gltf")
 
-        Worker.__init__(self, "drone", model, beam, 0.)
+        Worker.__init__(self, "drone", model, beam, beam_connector, 0.)
 
     def set_part(self, part):
 
@@ -306,10 +410,13 @@ class WorkerDrone(Worker):
 
 class Job:
 
-    def __init__(self, primitives, component, component_id, worker_type, worker_pos, next_jobs):
+    def __init__(self, primitives, component, finalizer, component_id,
+                 worker_type, worker_pos, next_jobs):
 
         self.primitives = primitives
         self.component = component
+        self._finalizer_func = finalizer
+        self.finalizer = lambda prim: finalizer(component, prim)
         self.component_id = component_id
         self.length = len(primitives)
         self.worker_type = worker_type
@@ -344,7 +451,8 @@ class Job:
             x, y, z = pos
             worker_pos.append(Point3(-x, y, z))
 
-        return Job(primitives, component, component_id, self.worker_type, worker_pos, [])
+        return Job(primitives, component, self._finalizer_func, component_id,
+            self.worker_type, worker_pos, [])
 
     @property
     def done(self):
@@ -375,15 +483,15 @@ class Job:
         prim = self.primitives.pop(0)
         worker_pos = self.worker_pos.pop(0)
 
-        return Part(self, self.component, prim, worker_pos)
+        return Part(self, prim, worker_pos)
 
 
 class Part:
 
-    def __init__(self, job, component, primitive, worker_pos):
+    def __init__(self, job, primitive, worker_pos):
 
         self.job = job
-        vertex_data = component.node().modify_geom(0).get_vertex_data()
+        vertex_data = job.component.node().modify_geom(0).get_vertex_data()
         geom = Geom(vertex_data)
         geom.add_primitive(primitive)
         self.primitive = primitive
@@ -395,7 +503,7 @@ class Part:
         self.model.set_light_off()
         self.model.set_color(0.5, 0.5, 1., 1.)
         self.model.set_alpha_scale(0.)
-        self.model.set_transform(component.get_net_transform())
+        self.model.set_transform(job.component.get_net_transform())
         p_min, p_max = self.model.get_tight_bounds()
         self.center = p_min + (p_max - p_min) * .5
 
@@ -406,14 +514,14 @@ class Part:
         self.job.notify_part_done()
         self.job = None
 
-    def solidify(self, task, duration, finalizer):
+    def solidify(self, task, duration):
 
         self.model.set_alpha_scale(task.time / duration)
 
         if task.time < duration:
             return task.cont
 
-        finalizer(self.primitive)
+        self.job.finalizer(self.primitive)
         self.destroy()
 
 
@@ -675,6 +783,7 @@ class Demo:
         self.jobs = []
         self.mirror_jobs = {}
         primitives = {}
+        finalizer = self.add_primitive
 
         for component_id, component in self.starship_components.items():
             node = component.node()
@@ -690,12 +799,13 @@ class Demo:
             node.set_final(True)
 
         for job_data in self.parse_job_schedule(starship_id):
+
             part_count = job_data["part_count"]
             del job_data["part_count"]
             component_id = job_data["component_id"]
             component = self.starship_components[component_id]
             prims = primitives[component_id][:part_count]
-            job = Job(prims, component, **job_data)
+            job = Job(prims, component, finalizer, **job_data)
             self.jobs.append(job)
             del primitives[component_id][:part_count]
             mirror_component_id = "mirror_" + component_id
@@ -714,8 +824,7 @@ class Demo:
         worker = IdleWorkers.pop(job.worker_type)
         check_job = lambda task: self.check_job(task, job, worker)
         base.task_mgr.add(check_job, "check_job")
-        finalizer = lambda prim: self.add_primitive(job.component, prim)
-        worker.do_job(job, finalizer, start=True)
+        worker.do_job(job, start=True)
         job.is_assigned = True
         self.add_mirror_job(job)
 
@@ -817,8 +926,7 @@ class Demo:
             worker = IdleWorkers.pop(mirror_job.worker_type)
             check_job = lambda task: self.check_job(task, mirror_job, worker)
             base.task_mgr.add(check_job, "check_job")
-            finalizer = lambda prim: self.add_primitive(mirror_job.component, prim)
-            worker.do_job(mirror_job, finalizer, start=True)
+            worker.do_job(mirror_job, start=True)
             mirror_job.is_assigned = True
 
         base.task_mgr.add(start_mirror_job, "start_mirror_job", delay=1.5)
@@ -834,8 +942,7 @@ class Demo:
 
             if not next_job.is_assigned:
                 next_worker = IdleWorkers.pop(next_job.worker_type)
-                finalizer = lambda prim: self.add_primitive(next_job.component, prim)
-                next_worker.do_job(next_job, finalizer, start=True)
+                next_worker.do_job(next_job, start=True)
                 next_job.is_assigned = True
                 next_check = lambda task: self.check_job(task, next_job, next_worker)
                 base.task_mgr.add(next_check, "check_job")
@@ -846,6 +953,7 @@ class Demo:
 
         if worker.type == "drone":
             IdleWorkers.add(worker)
+            worker.generator.set_z(worker.generator_start_z)
 
 
 Demo()
