@@ -24,6 +24,9 @@ v_format.add_array(array_format)
 v_format = GeomVertexFormat.register_format(v_format)
 
 
+CBA = ColorBlendAttrib
+
+
 def create_beam():
 
     from math import pi, sin, cos
@@ -68,6 +71,10 @@ def create_beam():
     beam = NodePath(node)
     beam.set_light_off()
     beam.set_transparency(TransparencyAttrib.M_alpha)
+    attrib = CBA.make(CBA.M_none, CBA.O_incoming_color, CBA.O_incoming_color,
+        CBA.M_add, CBA.O_incoming_alpha, CBA.O_one, (.5, .5, 1., 1.))
+    beam.set_attrib(attrib)
+    beam.set_bin("unsorted", 0)
 
     return beam
 
@@ -104,6 +111,10 @@ def create_beam_connector():
     beam_connector.set_two_sided(True)
     beam_connector.set_light_off()
     beam_connector.set_transparency(TransparencyAttrib.M_alpha)
+    attrib = CBA.make(CBA.M_none, CBA.O_incoming_color, CBA.O_incoming_color,
+        CBA.M_add, CBA.O_incoming_alpha, CBA.O_one, (.5, .5, 1., 1.))
+    beam_connector.set_attrib(attrib)
+    beam_connector.set_bin("unsorted", 0)
 
     return beam_connector
 
