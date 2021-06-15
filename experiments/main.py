@@ -6,6 +6,8 @@ import array
 
 load_prc_file_data("", "sync-video false")
 load_prc_file_data("", "win-size 1680 1050")
+# load_prc_file_data("", "win-size 2560 1440")
+# load_prc_file_data("", "fullscreen #t")
 load_prc_file_data("", "framebuffer-multisample 1")
 load_prc_file_data("", "multisamples 4")
 
@@ -47,8 +49,9 @@ def make_simple_spotlight(input_pos, look_at, shadows = False, shadow_res = 2048
     base.render.set_light(spotlight)
             
 make_simple_spotlight((200, 100, 150), (0, 5, 10), True)
-make_simple_spotlight((50, 100, 150), (5, -5, 10), False)
-make_simple_spotlight((100, 100, 200), (-5, 5, 10), False)
+make_simple_spotlight((200, 100, 200), (0, 5, 10), False)
+make_simple_spotlight((200, 100, 250), (0, 5, 10), False)
+make_simple_spotlight((200, 100, 300), (0, 5, 10), False)
 
 base.set_frame_rate_meter(True)
 
@@ -462,7 +465,7 @@ class WorkerDrone(Worker):
 
     def __init__(self, beam, beam_connector):
 
-        model = base.loader.load_model("models/worker_drone.gltf")
+        model = base.loader.load_model("models/worker_drone_updated_2021_06_15.gltf")
         model.set_pos(0, 0, 20)
 
         Worker.__init__(self, "drone", model, beam, beam_connector, 0.)
@@ -958,10 +961,11 @@ class Demo:
 
     def move_camera(self, task):
 
-        self.cam_heading -= 1.75 * globalClock.get_dt()
+        dt = globalClock.get_dt()
+        self.cam_heading -= 1.75 * dt
         self.cam_target.set_h(self.cam_heading)
         if base.camera.get_z() < 50:
-            base.camera.set_z(base.camera.get_z() + 0.003)
+            base.camera.set_z(base.camera.get_z() + 0.4 * dt)
         base.camera.look_at(0, 0, 5)
 
         return task.cont
