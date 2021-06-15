@@ -15,6 +15,7 @@ scene_shader = Shader.load(Shader.SL_GLSL, "shaders/simplepbr_vert_mod_1.vert", 
 # we want the mixed graphics pipe for procedural gen so we'll
 # not set the scene_shader on base.render
 # base.render.set_shader(scene_shader)
+base.render.set_antialias(AntialiasAttrib.MMultisample)
 
 # add a shop floor
 floor = base.loader.load_model("models/shiny_floor.gltf")
