@@ -49,8 +49,8 @@ def make_simple_spotlight(input_pos, look_at, shadows = False, shadow_res = 2048
     base.render.set_light(spotlight)
             
 make_simple_spotlight((200, 100, 150), (0, 5, 10), True)
-make_simple_spotlight((200, 100, 200), (0, 5, 10), False)
 make_simple_spotlight((200, 100, 250), (0, 5, 10), False)
+make_simple_spotlight((200, 100, 350), (0, 5, 10), False)
 # make_simple_spotlight((200, 100, 300), (0, 5, 10), False)
 
 base.set_frame_rate_meter(True)
