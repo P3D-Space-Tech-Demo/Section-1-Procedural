@@ -408,6 +408,7 @@ class WorkerDrone(Worker):
     def __init__(self, beam, beam_connector):
 
         model = base.loader.load_model("models/worker_drone.gltf")
+        model.set_pos(0, 0, 20)
 
         Worker.__init__(self, "drone", model, beam, beam_connector, 0.)
 
