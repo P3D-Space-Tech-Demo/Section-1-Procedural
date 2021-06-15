@@ -911,6 +911,9 @@ class Demo:
 
         self.cam_heading -= 1.75 * globalClock.get_dt()
         self.cam_target.set_h(self.cam_heading)
+        if base.camera.get_z() < 50:
+            base.camera.set_z(base.camera.get_z() + 0.003)
+        base.camera.look_at(0, 0, 5)
 
         return task.cont
 
