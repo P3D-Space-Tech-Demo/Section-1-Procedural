@@ -2,7 +2,7 @@ from direct.showbase.ShowBase import ShowBase
 from panda3d.core import *
 from random import random
 import array
-import gltf
+from direct.interval.IntervalGlobal import *
 
 load_prc_file_data("", "sync-video false")
 
@@ -412,10 +412,24 @@ class WorkerDrone(Worker):
         Worker.__init__(self, "drone", model, beam, beam_connector, 0.)
 
     def set_part(self, part):
+        import random
 
         self.part = part
         x, y, z = part.worker_pos
-        self.model.set_pos(x, y, z)
+        r_sec = random.uniform(1.5, 2.5)
+        drone_inter = LerpPosInterval(self.model, r_sec, (x, y, z), self.model.get_pos(), blendType='easeInOut')
+        ran_hpr = Vec3(random.uniform(-10, 10), random.uniform(-10, 10), random.uniform(-15, 15))
+        drone_rot = LerpHprInterval(self.model, 0.5, (ran_hpr), self.model.get_hpr(), blendType='easeInOut')
+        
+        drone_rotors = self.model.find_all_matches("**/propeller*")
+        for r in drone_rotors:
+            print(r)
+            LerpHprInterval(r, 0.1, (360, 0, 0), (0, 0, 0), blendType='easeInOut').loop()
+        
+        di_par = Parallel()
+        di_par.append(drone_inter)
+        di_par.append(drone_rot)
+        di_par.start()
         self._do_job()
 
 
