@@ -1,13 +1,54 @@
 from direct.showbase.ShowBase import ShowBase
 from panda3d.core import *
-from random import random
-import array
 from direct.interval.IntervalGlobal import *
+import random
+import array
 
 load_prc_file_data("", "sync-video false")
+load_prc_file_data("", "win-size 1680 1050")
+load_prc_file_data("", "framebuffer-multisample 1")
+load_prc_file_data("", "multisamples 4")
 
-
+# load a scene shader
 base = ShowBase()
+scene_shader = Shader.load(Shader.SL_GLSL, "shaders/simplepbr_vert_mod_1.vert", "shaders/simplepbr_frag_mod_1.frag")
+# we want the mixed graphics pipe for procedural gen so we'll
+# not set the scene_shader on base.render
+# base.render.set_shader(scene_shader)
+
+# add a shop floor
+floor = base.loader.load_model("models/shiny_floor.gltf")
+floor.reparent_to(base.render)
+floor.set_shader(scene_shader)
+floor.set_z(-0.3)
+
+for x in range(6):
+    plight_1 = PointLight('plight_1')
+    # add plight props here
+    plight_1_node = base.render.attach_new_node(plight_1)
+    plight_1_node.set_pos(1000, 1000, 1000)
+    plight_1_node.node().set_color((0.1, 0.1, 0.9, 0.75))
+    plight_1_node.node().set_attenuation((0.5, 0, 0.05))
+    base.render.set_light(plight_1_node)
+
+def make_simple_spotlight(input_pos, look_at, shadows = False, shadow_res = 2048):
+    spotlight = Spotlight('random_light')
+    if shadows:
+        spotlight.set_shadow_caster(True, shadow_res, shadow_res)
+        
+    lens = PerspectiveLens()
+    lens.set_near_far(0.5, 5000)
+    spotlight.set_lens(lens)
+    spotlight.set_attenuation((0.5, 0, 0.0000005))
+    spotlight = base.render.attach_new_node(spotlight)
+    spotlight.set_pos(input_pos)
+    spotlight.look_at(look_at)
+    base.render.set_light(spotlight)
+            
+make_simple_spotlight((200, 100, 150), (0, 5, 10), True)
+make_simple_spotlight((50, 100, 150), (5, -5, 10), False)
+make_simple_spotlight((100, 100, 200), (-5, 5, 10), False)
+
 base.set_frame_rate_meter(True)
 
 
@@ -198,7 +239,7 @@ class Worker:
             pos_reader.set_row(vert_row2)
             pos2 = pos_reader.get_data3()
             vec = pos2 - pos1
-            pos = pos1 + vec * random()
+            pos = pos1 + vec * randint(0, 1)
             pos = beam_root.get_relative_point(model, pos)
             beam_positions.append(pos)
             dist = pos.length()
@@ -216,6 +257,11 @@ class Worker:
             pos_view[6:9] = array.array("f", [*pos2])
 
         task.delay_time = .01
+
+        laser_plights = base.render.find_all_matches("**/plight*")
+        l_len = len(laser_plights)
+        for l in laser_plights:
+            laser_plights[random.randint(0, l_len - 1)].set_pos(beam.get_pos(base.render))
 
         return task.again
 
@@ -253,6 +299,11 @@ class Worker:
 
             self.beam_root.hide()
             base.task_mgr.add(deactivate_generator, "deactivate_generator")
+            
+            laser_plights = base.render.find_all_matches("**/plight*")
+            for l in laser_plights:
+                if round(l.get_pos()[0], 0) == round(self.beam_root.get_pos(base.render)[0], 0):
+                    l.set_pos(1000, 1000, 1000)
 
         def do_job():
 
@@ -301,6 +352,7 @@ class Worker:
             self.start_job = lambda: self.set_part(part)
             elevator = self.get_nearest_elevator(job.start_pos.y)
             elevator.add_request(lambda: elevator.raise_bot(self, job.start_pos))
+     
         else:
             self.set_part(part)
 
@@ -322,8 +374,11 @@ class Worker:
 class WorkerBot(Worker):
 
     def __init__(self, beam, beam_connector):
-
         model = base.loader.load_model("models/worker_bot.gltf")
+        pbr_beam = base.loader.load_model("models/cyl.gltf")
+        pbr_beam.set_scale(0.5)
+        pbr_beam.set_hpr(90, 90, 90)
+        pbr_beam.reparent_to(beam)
 
         Worker.__init__(self, "bot", model, beam, beam_connector, -.8875)
 
@@ -336,7 +391,6 @@ class WorkerBot(Worker):
         self._do_job = lambda: None
 
     def set_part(self, part):
-
         self.part = part
         x, y, z = part.worker_pos
         self.target_point = Point3(x, y, 0.)
@@ -424,13 +478,14 @@ class WorkerDrone(Worker):
         
         drone_rotors = self.model.find_all_matches("**/propeller*")
         for r in drone_rotors:
-            print(r)
+            # print(r)
             LerpHprInterval(r, 0.1, (360, 0, 0), (0, 0, 0), blendType='easeInOut').loop()
         
         di_par = Parallel()
         di_par.append(drone_inter)
         di_par.append(drone_rot)
         di_par.start()
+        
         self._do_job()
 
 
@@ -502,7 +557,6 @@ class Job:
         self.parts_done += 1
 
     def generate_part(self):
-
         if not self.primitives:
             return
 
@@ -515,7 +569,8 @@ class Job:
 class Part:
 
     def __init__(self, job, primitive, worker_pos):
-
+        import random
+        
         self.job = job
         vertex_data = job.component.node().modify_geom(0).get_vertex_data()
         geom = Geom(vertex_data)
@@ -742,30 +797,20 @@ class Elevator:
 class Demo:
 
     def __init__(self):
-
-        # set up light sources
-        p_light = PointLight("point_light")
-        p_light.set_color((.5, .5, .5, 1.))
-        self.light = base.camera.attach_new_node(p_light)
-        self.light.set_pos(5., -100., 7.)
-        base.render.set_light(self.light)
-        p_light2 = PointLight("point_light2")
-        p_light2.set_color((.5, .5, .5, 1.))
-        self.light2 = base.render.attach_new_node(p_light2)
-        self.light2.set_pos(10., 0., 50.)
-        base.render.set_light(self.light2)
-
         # set up camera control
         self.cam_heading = 180.
         self.cam_target = base.render.attach_new_node("cam_target")
         self.cam_target.set_z(10.)
         self.cam_target.set_h(self.cam_heading)
         base.camera.reparent_to(self.cam_target)
-        base.camera.set_y(-150.)
+        base.camera.set_x(-50)
+        base.camera.set_y(-125.)
+        base.camera.set_z(2)
+        base.camera.look_at(0, 0, 0)
         base.disable_mouse()
         base.task_mgr.add(self.move_camera, "move_camera")
 
-        base.set_background_color(0.3, 0.3, 0.3)
+        base.set_background_color(0.1, 0.1, 0.1, 1)
         self.setup_elevator_camera()
 
         for i in range(20):
@@ -779,6 +824,8 @@ class Demo:
 
         model_root = base.loader.load_model(f"models/{starship_id}.bam")
         model_root.reparent_to(base.render)
+        model_root.set_shader(scene_shader)
+        # model_root.set_two_sided(True)
         model_root.set_color(1., 1., 1., 1.)
 
         for model in model_root.find_all_matches("**/+GeomNode"):
@@ -920,7 +967,7 @@ class Demo:
 
     def setup_elevator_camera(self):
 
-        self.elevator_display_region = dr = base.win.make_display_region(.05, .35, .05, .45)
+        self.elevator_display_region = dr = base.win.make_display_region(.05, .25, .05, .35)
         dr.sort = 10
         dr.set_clear_color_active(True)
         dr.set_clear_depth_active(True)
