@@ -31,7 +31,7 @@ for x in range(6):
     plight_1_node = base.render.attach_new_node(plight_1)
     plight_1_node.set_pos(1000, 1000, 1000)
     plight_1_node.node().set_color((0.1, 0.1, 0.9, 0.75))
-    plight_1_node.node().set_attenuation((0.5, 0, 0.005))
+    plight_1_node.node().set_attenuation((0.5, 0, 0.05))
     base.render.set_light(plight_1_node)
 
 def make_simple_spotlight(input_pos, look_at, shadows = False, shadow_res = 2048):
