@@ -81,11 +81,6 @@ def create_beam():
 
 def create_beam_connector():
 
-    pos_data = array.array("f", [
-        0., 0., 0.,
-        0., 1., 0.,
-        0., 1., 0.
-    ])
     col_data = array.array("f", [
         .5, .5, 1., 1.,
         .5, .5, 1., 0.,
@@ -93,10 +88,7 @@ def create_beam_connector():
     ])
 
     v_data = GeomVertexData("data", v_format, enums.UH_static)
-    v_data.unclean_set_num_rows(3)
-    pos_data_array = v_data.modify_array(0)
-    pos_view = memoryview(pos_data_array).cast("B").cast("f")
-    pos_view[:] = pos_data
+    v_data.set_num_rows(3)
     col_data_array = v_data.modify_array(1)
     col_view = memoryview(col_data_array).cast("B").cast("f")
     col_view[:] = col_data
@@ -151,12 +143,13 @@ class IdleWorkers:
 
 class Worker:
 
-    def __init__(self, worker_type, model, beam, beam_connector, pivot_offset):
+    def __init__(self, worker_type, model, beam, beam_connector, generator_ext_z, pivot_offset=0.):
 
         self.type = worker_type
         self.model = model
         self.generator = model.find("**/generator")
         self.generator_start_z = self.generator.get_z()
+        self.generator_ext_z = generator_ext_z
         self.beam_root = self.generator.attach_new_node("beam_root")
         self.beam_root.hide()
         self.beams = [beam.copy_to(self.beam_root) for _ in range(4)]
@@ -167,6 +160,19 @@ class Worker:
 
         if worker_type == "drone":
             model.reparent_to(base.render)
+
+    def reset_energy_beams(self,):
+
+        for beam in self.beams:
+            beam.set_sy(.01)
+
+        pos_data = array.array("f", [0.] * 9)
+
+        for connector in self.beam_connectors:
+            v_data = connector.node().modify_geom(0).modify_vertex_data()
+            pos_data_array = v_data.modify_array(0)
+            pos_view = memoryview(pos_data_array).cast("B").cast("f")
+            pos_view[:] = pos_data
 
     def shoot_energy_beams(self, task):
 
@@ -186,6 +192,7 @@ class Worker:
         tri_count = prim.get_num_primitives()
         beam_root = self.beam_root
         beam_positions = []
+        use_randint = True
 
         for beam in self.beams:
             tri_index = randint(0, tri_count - 1)
@@ -198,7 +205,9 @@ class Worker:
             pos_reader.set_row(vert_row2)
             pos2 = pos_reader.get_data3()
             vec = pos2 - pos1
-            pos = pos1 + vec * random()
+            rand = randint(0, 1) if use_randint else random()
+            use_randint = not use_randint
+            pos = pos1 + vec * rand
             pos = beam_root.get_relative_point(model, pos)
             beam_positions.append(pos)
             dist = pos.length()
@@ -247,35 +256,38 @@ class Worker:
 
     def do_job(self, job, start=False):
 
+        self.part = None
         part = job.generate_part()
         tmp_node = self.generator.attach_new_node("tmp_node")
+        ext_z = self.generator_ext_z
 
         def deactivation_task(task):
 
             self.beam_root.hide()
             tmp_node.wrt_reparent_to(base.render)
             base.task_mgr.add(deactivate_generator, "deactivate_generator")
-            part.move_to_ship(tmp_node)
 
         def do_job():
 
+            self.part.model.reparent_to(base.render)
+            self.part.model.wrt_reparent_to(tmp_node)
+            tmp_node.set_scale(.1)
+            duration = 1.5
+            self.reset_energy_beams()
             self.beam_root.show()
             base.task_mgr.add(self.shoot_energy_beams, "shoot_energy_beams", delay=0.)
-            part.model.reparent_to(base.render)
-            part.model.wrt_reparent_to(tmp_node)
-            tmp_node.set_scale(.8)
-            solidify_task = lambda task: part.solidify(task, 1.5)
+            self.part.move_to_ship(tmp_node, duration)
+            solidify_task = lambda task: self.part.solidify(task, duration)
             base.task_mgr.add(solidify_task, "solidify")
-            base.task_mgr.add(deactivation_task, "deactivate_beams", delay=1.5)
+            base.task_mgr.add(deactivation_task, "deactivate_beams", delay=duration)
 
         def activate_generator(task):
 
             dt = globalClock.get_dt()
-            z = self.generator.get_z() + (.5 if self.type == "bot" else -.5) * dt
-            end_z = self.generator_start_z + (.25 if self.type == "bot" else -.25)
-            cond = z >= end_z if self.type == "bot" else z <= end_z
+            z = self.generator.get_z() + ext_z * 2. * dt
+            end_z = self.generator_start_z + ext_z
 
-            if cond:
+            if (z - end_z) * (-1. if ext_z < 0. else 1.) >= 0.:
                 self.generator.set_z(end_z)
                 do_job()
                 return
@@ -287,11 +299,10 @@ class Worker:
         def deactivate_generator(task):
 
             dt = globalClock.get_dt()
-            z = self.generator.get_z() - (.5 if self.type == "bot" else -.5) * dt
+            z = self.generator.get_z() - ext_z * 2. * dt
             end_z = self.generator_start_z
-            cond = z <= end_z if self.type == "bot" else z >= end_z
 
-            if cond:
+            if (z - end_z) * (-1. if ext_z < 0. else 1.) <= 0.:
                 self.generator.set_z(end_z)
                 self.continue_job(job)
                 return
@@ -330,7 +341,7 @@ class WorkerBot(Worker):
 
         model = base.loader.load_model("models/worker_bot.gltf")
 
-        Worker.__init__(self, "bot", model, beam, beam_connector, -.8875)
+        Worker.__init__(self, "bot", model, beam, beam_connector, .25, -.8875)
 
         self.turn_speed = 300.
         self.accel = 15.
@@ -414,7 +425,7 @@ class WorkerDrone(Worker):
 
         model = base.loader.load_model("models/worker_drone.gltf")
 
-        Worker.__init__(self, "drone", model, beam, beam_connector, 0.)
+        Worker.__init__(self, "drone", model, beam, beam_connector, -.1)
 
     def set_part(self, part):
 
@@ -537,35 +548,38 @@ class Part:
         if task.time < duration:
             return task.cont
 
-#        self.job.finalizer(self.primitive)
+        self.job.finalizer(self.primitive)
         self.job.notify_part_done()
-#        self.destroy()
+        self.destroy()
 
-    def cool_down(self, task):
+    '''def cool_down(self, task):
 
         self.model.set_alpha_scale(1. - task.time / 1.5)
 
         if task.time < 1.5:
             return task.cont
 
-        self.destroy()
+        self.destroy()'''
 
-    def reset_size(self, task, node):
+    def reset_size(self, task, node, duration):
 
-        scale = .8 + (task.time / .5) * .2
-        node.set_scale(scale)
+        t = task.time
+        scale = .1 + (t / duration) * .9
 
-        if task.time < .5:
+        if t < duration:
+            node.set_scale(scale)
             return task.cont
 
+        node.set_scale(1.)
         self.model.wrt_reparent_to(base.render)
         node.detach_node()
-        self.job.finalizer(self.primitive)
-        base.task_mgr.add(self.cool_down, "cool_part_down")
+#        self.job.finalizer(self.primitive)
+#        base.task_mgr.add(self.cool_down, "cool_part_down")
+#        self.destroy()
 
-    def move_to_ship(self, node):
+    def move_to_ship(self, node, duration):
 
-        base.task_mgr.add(lambda task: self.reset_size(task, node), "reset_part_size")
+        base.task_mgr.add(lambda task: self.reset_size(task, node, duration), "reset_part_size")
 
 
 class Elevator:
