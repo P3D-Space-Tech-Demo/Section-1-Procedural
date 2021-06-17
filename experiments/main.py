@@ -16,13 +16,13 @@ base = ShowBase()
 scene_shader = Shader.load(Shader.SL_GLSL, "shaders/simplepbr_vert_mod_1.vert", "shaders/simplepbr_frag_mod_1.frag")
 # we want the mixed graphics pipe for procedural gen so we'll
 # not set the scene_shader on base.render
-# base.render.set_shader(scene_shader)
+base.render.set_shader(scene_shader)
 base.render.set_antialias(AntialiasAttrib.MMultisample)
 
 # add a shop floor
 floor = base.loader.load_model("models/shiny_floor.gltf")
 floor.reparent_to(base.render)
-floor.set_shader(scene_shader)
+#floor.set_shader(scene_shader)
 floor.set_z(-0.3)
 
 for x in range(6):
@@ -34,11 +34,14 @@ for x in range(6):
     plight_1_node.node().set_attenuation((0.5, 0, 0.05))
     base.render.set_light(plight_1_node)
 
+shadow_mask = BitMask32.bit(1)
+
 def make_simple_spotlight(input_pos, look_at, shadows = False, shadow_res = 2048):
     spotlight = Spotlight('random_light')
     if shadows:
         spotlight.set_shadow_caster(True, shadow_res, shadow_res)
-        
+        spotlight.camera_mask = shadow_mask
+
     lens = PerspectiveLens()
     lens.set_near_far(0.5, 5000)
     spotlight.set_lens(lens)
@@ -52,6 +55,13 @@ make_simple_spotlight((200, 100, 900), (0, 5, 10), True)
 make_simple_spotlight((200, 100, 900), (0, 5, 10), False)
 make_simple_spotlight((200, 100, 900), (0, 5, 10), False)
 # make_simple_spotlight((200, 100, 300), (0, 5, 10), False)
+
+
+pbr_material = Material("pbr_material")
+pbr_material.base_color = (0.0049883, 0., 0.8, 1.)
+pbr_material.refractive_index = 1.
+pbr_material.emission = (0., 0.39676, 0.527723, 0.)
+pbr_material.roughness = 0.5
 
 base.set_frame_rate_meter(True)
 
@@ -115,22 +125,19 @@ def create_beam():
     node.add_geom(geom)
     beam = NodePath(node)
     beam.set_light_off()
+    beam.set_material(pbr_material)
     beam.set_transparency(TransparencyAttrib.M_alpha)
     attrib = CBA.make(CBA.M_none, CBA.O_incoming_color, CBA.O_incoming_color,
         CBA.M_add, CBA.O_incoming_alpha, CBA.O_one, (.5, .5, 1., 1.))
     beam.set_attrib(attrib)
     beam.set_bin("unsorted", 0)
+    beam.hide(shadow_mask)
 
     return beam
 
 
 def create_beam_connector():
 
-    pos_data = array.array("f", [
-        0., 0., 0.,
-        0., 1., 0.,
-        0., 1., 0.
-    ])
     col_data = array.array("f", [
         .5, .5, 1., 1.,
         .5, .5, 1., 0.,
@@ -138,10 +145,7 @@ def create_beam_connector():
     ])
 
     v_data = GeomVertexData("data", v_format, enums.UH_static)
-    v_data.unclean_set_num_rows(3)
-    pos_data_array = v_data.modify_array(0)
-    pos_view = memoryview(pos_data_array).cast("B").cast("f")
-    pos_view[:] = pos_data
+    v_data.set_num_rows(3)
     col_data_array = v_data.modify_array(1)
     col_view = memoryview(col_data_array).cast("B").cast("f")
     col_view[:] = col_data
@@ -155,11 +159,13 @@ def create_beam_connector():
     beam_connector = NodePath(node)
     beam_connector.set_two_sided(True)
     beam_connector.set_light_off()
+    beam_connector.set_material(pbr_material)
     beam_connector.set_transparency(TransparencyAttrib.M_alpha)
     attrib = CBA.make(CBA.M_none, CBA.O_incoming_color, CBA.O_incoming_color,
         CBA.M_add, CBA.O_incoming_alpha, CBA.O_one, (.5, .5, 1., 1.))
     beam_connector.set_attrib(attrib)
     beam_connector.set_bin("unsorted", 0)
+    beam_connector.hide(shadow_mask)
 
     return beam_connector
 
@@ -196,12 +202,13 @@ class IdleWorkers:
 
 class Worker:
 
-    def __init__(self, worker_type, model, beam, beam_connector, pivot_offset):
+    def __init__(self, worker_type, model, beam, beam_connector, generator_ext_z, pivot_offset=0.):
 
         self.type = worker_type
         self.model = model
         self.generator = model.find("**/generator")
         self.generator_start_z = self.generator.get_z()
+        self.generator_ext_z = generator_ext_z
         self.beam_root = self.generator.attach_new_node("beam_root")
         self.beam_root.hide()
         self.beams = [beam.copy_to(self.beam_root) for _ in range(4)]
@@ -213,9 +220,22 @@ class Worker:
         if worker_type == "drone":
             model.reparent_to(base.render)
 
+    def reset_energy_beams(self,):
+
+        for beam in self.beams:
+            beam.set_sy(.01)
+
+        pos_data = array.array("f", [0.] * 9)
+
+        for connector in self.beam_connectors:
+            v_data = connector.node().modify_geom(0).modify_vertex_data()
+            pos_data_array = v_data.modify_array(0)
+            pos_view = memoryview(pos_data_array).cast("B").cast("f")
+            pos_view[:] = pos_data
+
     def shoot_energy_beams(self, task):
 
-        from random import randint
+        from random import random, randint
 
         if not self.part:
             return
@@ -231,6 +251,7 @@ class Worker:
         tri_count = prim.get_num_primitives()
         beam_root = self.beam_root
         beam_positions = []
+        use_randint = True
 
         for beam in self.beams:
             tri_index = randint(0, tri_count - 1)
@@ -243,7 +264,9 @@ class Worker:
             pos_reader.set_row(vert_row2)
             pos2 = pos_reader.get_data3()
             vec = pos2 - pos1
-            pos = pos1 + vec * randint(0, 1)
+            rand = randint(0, 1) if use_randint else random()
+            use_randint = not use_randint
+            pos = pos1 + vec * rand
             pos = beam_root.get_relative_point(model, pos)
             beam_positions.append(pos)
             dist = pos.length()
@@ -265,7 +288,7 @@ class Worker:
         laser_plights = base.render.find_all_matches("**/plight*")
         l_len = len(laser_plights)
         for l in laser_plights:
-            laser_plights[random.randint(0, l_len - 1)].set_pos(beam.get_pos(base.render))
+            laser_plights[randint(0, l_len - 1)].set_pos(beam.get_pos(base.render))
 
         return task.again
 
@@ -298,6 +321,7 @@ class Worker:
     def do_job(self, job, start=False):
 
         part = job.generate_part()
+        ext_z = self.generator_ext_z
 
         def deactivation_task(task):
 
@@ -311,21 +335,22 @@ class Worker:
 
         def do_job():
 
+            duration = 1.5
+            self.reset_energy_beams()
             self.beam_root.show()
             base.task_mgr.add(self.shoot_energy_beams, "shoot_energy_beams", delay=0.)
             part.model.reparent_to(base.render)
-            solidify_task = lambda task: part.solidify(task, 1.5)
+            solidify_task = lambda task: part.solidify(task, duration)
             base.task_mgr.add(solidify_task, "solidify")
-            base.task_mgr.add(deactivation_task, "deactivate_beams", delay=1.5)
+            base.task_mgr.add(deactivation_task, "deactivate_beams", delay=duration)
 
         def activate_generator(task):
 
             dt = globalClock.get_dt()
-            z = self.generator.get_z() + (.5 if self.type == "bot" else -.5) * dt
-            end_z = self.generator_start_z + (.25 if self.type == "bot" else -.25)
-            cond = z >= end_z if self.type == "bot" else z <= end_z
+            z = self.generator.get_z() + ext_z * 2. * dt
+            end_z = self.generator_start_z + ext_z
 
-            if cond:
+            if (z - end_z) * (-1. if ext_z < 0. else 1.) >= 0.:
                 self.generator.set_z(end_z)
                 do_job()
                 return
@@ -337,11 +362,10 @@ class Worker:
         def deactivate_generator(task):
 
             dt = globalClock.get_dt()
-            z = self.generator.get_z() - (.5 if self.type == "bot" else -.5) * dt
+            z = self.generator.get_z() - ext_z * 2. * dt
             end_z = self.generator_start_z
-            cond = z <= end_z if self.type == "bot" else z >= end_z
 
-            if cond:
+            if (z - end_z) * (-1. if ext_z < 0. else 1.) <= 0.:
                 self.generator.set_z(end_z)
                 self.continue_job(job)
                 return
@@ -379,12 +403,8 @@ class WorkerBot(Worker):
 
     def __init__(self, beam, beam_connector):
         model = base.loader.load_model("models/worker_bot.gltf")
-        pbr_beam = base.loader.load_model("models/cyl.gltf")
-        pbr_beam.set_scale(0.5)
-        pbr_beam.set_hpr(90, 90, 90)
-        pbr_beam.reparent_to(beam)
 
-        Worker.__init__(self, "bot", model, beam, beam_connector, -.8875)
+        Worker.__init__(self, "bot", model, beam, beam_connector, .25, -.8875)
 
         self.turn_speed = 300.
         self.accel = 15.
@@ -468,7 +488,7 @@ class WorkerDrone(Worker):
         model = base.loader.load_model("models/worker_drone_updated_2021_06_15.gltf")
         model.set_pos(0, 0, 20)
 
-        Worker.__init__(self, "drone", model, beam, beam_connector, 0.)
+        Worker.__init__(self, "drone", model, beam, beam_connector, -.1)
 
     def set_part(self, part):
         import random
@@ -586,6 +606,7 @@ class Part:
         self.model = NodePath(node)
         self.model.set_transparency(TransparencyAttrib.M_alpha)
         self.model.set_light_off()
+        self.model.set_material(pbr_material)
         self.model.set_color(0.5, 0.5, 1., 1.)
         self.model.set_alpha_scale(0.)
         self.model.set_transform(job.component.get_net_transform())
@@ -828,7 +849,7 @@ class Demo:
 
         model_root = base.loader.load_model(f"models/{starship_id}.bam")
         model_root.reparent_to(base.render)
-        model_root.set_shader(scene_shader)
+#        model_root.set_shader(scene_shader)
         # model_root.set_two_sided(True)
         model_root.set_color(1., 1., 1., 1.)
 
