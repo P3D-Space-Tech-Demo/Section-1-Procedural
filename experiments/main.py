@@ -16,13 +16,13 @@ base = ShowBase()
 scene_shader = Shader.load(Shader.SL_GLSL, "shaders/simplepbr_vert_mod_1.vert", "shaders/simplepbr_frag_mod_1.frag")
 # we want the mixed graphics pipe for procedural gen so we'll
 # not set the scene_shader on base.render
-base.render.set_shader(scene_shader)
+# base.render.set_shader(scene_shader)
 base.render.set_antialias(AntialiasAttrib.MMultisample)
 
 # add a shop floor
 floor = base.loader.load_model("models/shiny_floor.gltf")
 floor.reparent_to(base.render)
-#floor.set_shader(scene_shader)
+floor.set_shader(scene_shader)
 floor.set_z(-0.3)
 
 for x in range(6):
@@ -849,7 +849,7 @@ class Demo:
 
         model_root = base.loader.load_model(f"models/{starship_id}.bam")
         model_root.reparent_to(base.render)
-#        model_root.set_shader(scene_shader)
+        model_root.set_shader(scene_shader)
         # model_root.set_two_sided(True)
         model_root.set_color(1., 1., 1., 1.)
 
