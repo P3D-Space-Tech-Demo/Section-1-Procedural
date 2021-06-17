@@ -14,8 +14,8 @@ load_prc_file_data("", "multisamples 4")
 # load a scene shader
 base = ShowBase()
 scene_shader = Shader.load(Shader.SL_GLSL, "shaders/simplepbr_vert_mod_1.vert", "shaders/simplepbr_frag_mod_1.frag")
-# we want the mixed graphics pipe for procedural gen so we'll
-# not set the scene_shader on base.render
+# we want the mixed graphics pipe for performance reasons
+# so we'll not set the scene_shader on base.render
 # base.render.set_shader(scene_shader)
 base.render.set_antialias(AntialiasAttrib.MMultisample)
 
